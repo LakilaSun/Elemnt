@@ -1,16 +1,22 @@
 // Elemnt — content script
-// Mode sélection : hover = highlight, clic = ajoute l'élément à la sélection.
-// Panneau latéral : commentaires par élément + export JSON.
+// Deux modes :
+//   🎯 Pick  : survol = highlight, clic = ajoute/retire l'élément de la sélection
+//   ▭ Drag   : dessine un rectangle, les éléments interceptés sont ajoutés
+//              (la surbrillance n'apparaît qu'après la sélection)
+// Un commentaire unique est attaché au GROUPE de sélection.
 
 (() => {
   if (window.__elemntActive) {
-    // Déjà actif : un second message sert à désactiver.
     teardown();
     return;
   }
   window.__elemntActive = true;
 
-  const selections = []; // { el, selector, comment }
+  const state = {
+    mode: "pick", // 'pick' | 'drag'
+    selections: [], // { el, selector }
+    groupComment: ""
+  };
 
   // ---------- utilitaires ----------
 
@@ -37,6 +43,13 @@
     return parts.join(" > ");
   }
 
+  function isVisible(el) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) return false;
+    const st = getComputedStyle(el);
+    return st.visibility !== "hidden" && st.display !== "none";
+  }
+
   function describe(el) {
     const classes =
       typeof el.className === "string" ? el.className.trim() : "";
@@ -60,34 +73,125 @@
     };
   }
 
-  // ---------- hover highlight ----------
+  function mark(el) {
+    el.classList.add("elemnt-selected-outline");
+  }
+  function unmark(el) {
+    el.classList.remove("elemnt-selected-outline");
+    el.classList.remove("elemnt-hover-outline");
+  }
+
+  function isSelected(el) {
+    return state.selections.some((s) => s.el === el);
+  }
+
+  function addSelection(el) {
+    if (!el || isSelected(el)) return;
+    state.selections.push({ el, selector: cssPath(el) });
+    mark(el);
+    renderList();
+  }
+
+  function removeSelection(index) {
+    const s = state.selections[index];
+    if (!s) return;
+    unmark(s.el);
+    state.selections.splice(index, 1);
+    renderList();
+  }
+
+  // ---------- mode PICK ----------
 
   let hovered = null;
 
-  function onOver(e) {
+  function pickOver(e) {
     const el = e.target;
     if (panelContains(el)) return;
-    if (hovered && hovered !== el) hovered.classList.remove("elemnt-hover-outline");
+    if (hovered && hovered !== el) unmark(hovered);
     hovered = el;
-    el.classList.add("elemnt-hover-outline");
+    if (!isSelected(el)) el.classList.add("elemnt-hover-outline");
   }
 
-  function onOut() {
-    if (hovered) hovered.classList.remove("elemnt-hover-outline");
+  function pickOut() {
+    if (hovered) unmark(hovered);
   }
 
-  // ---------- sélection au clic ----------
-
-  function onClick(e) {
-    if (panelContains(e.target)) return; // laisser le panneau fonctionner
+  function pickClick(e) {
+    if (panelContains(e.target)) return;
     e.preventDefault();
     e.stopPropagation();
-    const el = e.target;
-    if (selections.some((s) => s.el === el)) return;
-    el.classList.remove("elemnt-hover-outline");
-    el.classList.add("elemnt-selected-outline");
-    selections.push({ el, selector: cssPath(el), comment: "" });
+    const idx = state.selections.findIndex((s) => s.el === e.target);
+    if (idx >= 0) removeSelection(idx); // re-clic = retire
+    else addSelection(e.target);
+  }
+
+  // ---------- mode DRAG ----------
+
+  let band = null;
+  let dragStart = null;
+
+  function dragDown(e) {
+    if (panelContains(e.target)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragStart = { x: e.clientX, y: e.clientY, scrollY: window.scrollY };
+    band = document.createElement("div");
+    band.id = "elemnt-band";
+    document.documentElement.appendChild(band);
+    positionBand(e.clientX, e.clientY);
+  }
+
+  function positionBand(cx, cy) {
+    const x = Math.min(dragStart.x, cx);
+    const y = Math.min(dragStart.y, cy);
+    band.style.left = x + "px";
+    band.style.top = y + "px";
+    band.style.width = Math.abs(cx - dragStart.x) + "px";
+    band.style.height =
+      Math.abs(cy - dragStart.y) + Math.abs(window.scrollY - dragStart.scrollY) + "px";
+  }
+
+  function dragMove(e) {
+    if (!band) return;
+    positionBand(e.clientX, e.clientY);
+  }
+
+  function dragUp() {
+    if (!band) return;
+    const r = band.getBoundingClientRect();
+    band.remove();
+    band = null;
+    dragStart = null;
+    if (r.width < 6 || r.height < 6) return; // trop petit = accident de clic
+
+    const candidates = Array.from(document.querySelectorAll("*")).filter(
+      (el) =>
+        !panelContains(el) &&
+        el.tagName !== "HTML" &&
+        el.tagName !== "BODY" &&
+        !el.id.startsWith("elemnt") &&
+        isVisible(el)
+    ).filter((el) => {
+      const b = el.getBoundingClientRect();
+      return (
+        b.left < r.right && b.right > r.left &&
+        b.top < r.bottom && b.bottom > r.top
+      );
+    });
+
+    // Garde les blocs englobants, élimine les enfants contenus dans un bloc gardé
+    candidates.sort((a, b) => area(b) - area(a));
+    const kept = [];
+    for (const el of candidates) {
+      if (!kept.some((k) => k.contains(el) || el.contains(k))) kept.push(el);
+    }
+    kept.slice(0, 60).forEach(addSelection); // garde-fou : 60 éléments max
     renderList();
+  }
+
+  function area(el) {
+    const r = el.getBoundingClientRect();
+    return r.width * r.height;
   }
 
   // ---------- panneau ----------
@@ -104,9 +208,16 @@
     panel.innerHTML = `
       <header>
         <strong>Elemnt</strong>
-        <span style="color:#9aa0ac;font-size:11px">${selections.length} élément(s)</span>
-        <button id="elemnt-close" title="Quitter le mode sélection">✕</button>
+        <span id="elemnt-counter">0</span>
+        <span id="elemnt-minimize" title="Replier / déplier">—</span>
+        <button id="elemnt-close" title="Quitter">✕</button>
       </header>
+      <div id="elemnt-modes">
+        <button data-mode="pick" title="Survoler puis cliquer les éléments">🎯 Pick</button>
+        <button data-mode="drag" title="Dessiner un rectangle de sélection">▭ Drag</button>
+      </div>
+      <textarea id="elemnt-group-comment"
+        placeholder="Commentaire pour la sélection (tout le groupe)…"></textarea>
       <div id="elemnt-list"></div>
       <div id="elemnt-footer">
         <button id="elemnt-copy">Copier JSON</button>
@@ -115,34 +226,52 @@
     document.documentElement.appendChild(panel);
 
     panel.querySelector("#elemnt-close").addEventListener("click", teardown);
+    panel.querySelector("#elemnt-minimize").addEventListener("click", () => {
+      panel.classList.toggle("elemnt-collapsed");
+    });
+    panel.querySelector("#elemnt-group-comment").addEventListener("input", (e) => {
+      state.groupComment = e.target.value;
+    });
+    panel.querySelectorAll("#elemnt-modes button").forEach((btn) => {
+      btn.addEventListener("click", () => setMode(btn.dataset.mode));
+    });
     panel.querySelector("#elemnt-copy").addEventListener("click", copyJson);
     panel.querySelector("#elemnt-export").addEventListener("click", downloadJson);
+    setMode(state.mode);
     renderList();
   }
 
+  function setMode(mode) {
+    state.mode = mode;
+    panel.querySelectorAll("#elemnt-modes button").forEach((b) => {
+      b.classList.toggle("active", b.dataset.mode === mode);
+    });
+  }
+
   function renderList() {
+    if (!panel) return;
+    panel.querySelector("#elemnt-counter").textContent =
+      `${state.selections.length} élément(s)`;
     const list = panel.querySelector("#elemnt-list");
-    const counter = panel.querySelector("header span");
-    counter.textContent = `${selections.length} élément(s)`;
     list.innerHTML = "";
 
-    selections.forEach((s, i) => {
+    state.selections.forEach((s, i) => {
+      const d = describe(s.el);
       const item = document.createElement("div");
       item.className = "elemnt-item";
-      const d = describe(s.el);
       item.innerHTML = `
         <div class="elemnt-tagline">#${i + 1} ${d.tag}${d.id ? "#" + d.id : ""}${
         d.classes.length ? "." + d.classes.join(".") : ""
       }</div>
-        <textarea placeholder="Commentaire pour l'agent IA…"></textarea>
         <button class="elemnt-remove">Retirer</button>`;
-      const ta = item.querySelector("textarea");
-      ta.value = s.comment;
-      ta.addEventListener("input", () => (s.comment = ta.value));
-      item.querySelector(".elemnt-remove").addEventListener("click", () => {
-        s.el.classList.remove("elemnt-selected-outline");
-        selections.splice(i, 1);
-        renderList();
+      item.querySelector(".elemnt-remove").addEventListener("click", () =>
+        removeSelection(i)
+      );
+      // clic sur la ligne = fait défiler jusqu'à l'élément
+      item.querySelector(".elemnt-tagline").addEventListener("click", () => {
+        s.el.scrollIntoView({ behavior: "smooth", block: "center" });
+        s.el.classList.add("elemnt-flash");
+        setTimeout(() => s.el.classList.remove("elemnt-flash"), 1200);
       });
       list.appendChild(item);
     });
@@ -153,16 +282,13 @@
   function buildReport() {
     return {
       tool: "Elemnt",
-      version: "0.1.0",
+      version: "0.2.0",
       generatedAt: new Date().toISOString(),
-      page: {
-        url: location.href,
-        title: document.title
-      },
-      elements: selections.map((s, i) => ({
+      page: { url: location.href, title: document.title },
+      instruction: state.groupComment,
+      elements: state.selections.map((s, i) => ({
         index: i + 1,
-        ...describe(s.el),
-        instruction: s.comment
+        ...describe(s.el)
       }))
     };
   }
@@ -171,9 +297,9 @@
     const json = JSON.stringify(buildReport(), null, 2);
     try {
       await navigator.clipboard.writeText(json);
-      flash("✓ Copié dans le presse-papiers");
+      flash("✓ Copié !");
     } catch {
-      flash("✗ Copie refusée par le navigateur");
+      flash("✗ Copie refusée");
     }
   }
 
@@ -199,20 +325,46 @@
 
   function activate() {
     buildPanel();
-    document.addEventListener("mouseover", onOver, true);
-    document.addEventListener("mouseout", onOut, true);
-    document.addEventListener("click", onClick, true);
+    bindMode();
+    document.addEventListener("keydown", onKey);
+  }
+
+  function bindMode() {
+    unbindMode();
+    if (state.mode === "pick") {
+      document.addEventListener("mouseover", pickOver, true);
+      document.addEventListener("mouseout", pickOut, true);
+      document.addEventListener("click", pickClick, true);
+    } else {
+      document.addEventListener("mousedown", dragDown, true);
+      document.addEventListener("mousemove", dragMove, true);
+      document.addEventListener("mouseup", dragUp, true);
+    }
+  }
+
+  function unbindMode() {
+    document.removeEventListener("mouseover", pickOver, true);
+    document.removeEventListener("mouseout", pickOut, true);
+    document.removeEventListener("click", pickClick, true);
+    document.removeEventListener("mousedown", dragDown, true);
+    document.removeEventListener("mousemove", dragMove, true);
+    document.removeEventListener("mouseup", dragUp, true);
+  }
+
+  function onKey(e) {
+    if (e.key === "Escape") teardown();
   }
 
   function teardown() {
     window.__elemntActive = false;
-    document.removeEventListener("mouseover", onOver, true);
-    document.removeEventListener("mouseout", onOut, true);
-    document.removeEventListener("click", onClick, true);
-    selections.forEach((s) => s.el.classList.remove("elemnt-selected-outline"));
-    if (hovered) hovered.classList.remove("elemnt-hover-outline");
+    unbindMode();
+    document.removeEventListener("keydown", onKey);
+    state.selections.forEach((s) => unmark(s.el));
+    if (hovered) unmark(hovered);
+    if (band) band.remove();
     if (panel) panel.remove();
     panel = null;
+    band = null;
   }
 
   chrome.runtime.onMessage.addListener((msg) => {
