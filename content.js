@@ -202,6 +202,39 @@
     return panel && (el === panel || panel.contains(el));
   }
 
+  // ---------- déplacement du panneau ----------
+
+  let panelDragMoved = false;
+
+  function panelDragStart(e) {
+    if (e.target.closest("#elemnt-close")) return;
+    e.preventDefault();
+    panelDragMoved = false;
+    const rect = panel.getBoundingClientRect();
+    const offX = e.clientX - rect.left;
+    const offY = e.clientY - rect.top;
+    // bascule en positionnement absolu aux coordonnées courantes
+    panel.style.left = rect.left + "px";
+    panel.style.top = rect.top + "px";
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
+
+    function move(ev) {
+      panelDragMoved = true;
+      const x = Math.min(Math.max(0, ev.clientX - offX), window.innerWidth - 80);
+      const y = Math.min(Math.max(0, ev.clientY - offY), window.innerHeight - 30);
+      panel.style.left = x + "px";
+      panel.style.top = y + "px";
+    }
+    function up() {
+      document.removeEventListener("mousemove", move, true);
+      document.removeEventListener("mouseup", up, true);
+      setTimeout(() => (panelDragMoved = false), 0);
+    }
+    document.addEventListener("mousemove", move, true);
+    document.addEventListener("mouseup", up, true);
+  }
+
   function buildPanel() {
     panel = document.createElement("div");
     panel.id = "elemnt-panel";
@@ -226,8 +259,13 @@
     document.documentElement.appendChild(panel);
 
     panel.querySelector("#elemnt-close").addEventListener("click", teardown);
-    panel.querySelector("#elemnt-minimize").addEventListener("click", () => {
-      panel.classList.toggle("elemnt-collapsed");
+
+    // Déplacement du panneau par son header
+    const header = panel.querySelector("header");
+    header.addEventListener("mousedown", panelDragStart);
+    header.addEventListener("click", (e) => {
+      // un clic simple (sans drag) sur le header replie/déplie
+      if (!panelDragMoved) panel.classList.toggle("elemnt-collapsed");
     });
     panel.querySelector("#elemnt-group-comment").addEventListener("input", (e) => {
       state.groupComment = e.target.value;

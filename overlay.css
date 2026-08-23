@@ -29,7 +29,7 @@
 
 #elemnt-panel {
   position: fixed;
-  top: 16px;
+  bottom: 16px;
   right: 16px;
   width: 340px;
   max-height: calc(100vh - 32px);
@@ -63,6 +63,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  cursor: move;
+  user-select: none;
 }
 #elemnt-panel header strong { font-size: 14px; margin-right: auto; }
 
