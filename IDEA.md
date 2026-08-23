@@ -1,0 +1,1 @@
+Une extension qui permet de selectionner (drag&select) des éléments sur une page web, de commenter la selection, puis de générer un report JSON à partir des selection prêt à être communiqué à un agent IA pour qu'il fasse les modification/ajout de feature demandé en fonction des éléments HTML pluôt que simplemnt en partageant des screens.
