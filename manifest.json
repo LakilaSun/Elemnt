@@ -1,9 +1,19 @@
 {
   "manifest_version": 3,
   "name": "Elemnt",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Sélectionnez des éléments d'une page web, commentez-les, et générez un rapport JSON prêt à envoyer à un agent IA.",
   "permissions": ["activeTab", "scripting", "clipboardWrite"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+      "js": ["content.js"],
+      "css": ["overlay.css"],
+      "all_frames": true,
+      "match_origin_as_fallback": true
+    }
+  ],
   "action": {
     "default_title": "Elemnt — mode sélection"
   },

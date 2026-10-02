@@ -17,6 +17,8 @@ Les éléments affichés dans un **cadre** (iframe) se sélectionnent comme ceux
 
 Un élément venu d'un cadre porte dans le rapport un champ `frame` : `{ url, title }` (le titre du document du cadre), et sa position `rect` est comptée depuis le cadre. Dans la liste du panneau, le titre du cadre suit l'élément.
 
+**Cadres isolés : sur 127.0.0.1 et localhost seulement.** Chrome place un cadre `sandbox` dans un processus à part, que la permission « au clic » (`activeTab`) ne couvre pas : l'extension y était aveugle. Pour les applications en local (127.0.0.1, localhost, tout port), elle déclare donc un accès permanent et charge son script d'office dans tous leurs cadres (il reste inactif tant qu'on ne clique pas sur l'icône). Ailleurs, rien ne change : seule la permission au clic, et les cadres isolés hors d'atteinte. Vérifié dans Chrome 154 avec un vrai déclenchement de l'icône (`Extensions.triggerAction`) : sans cet accès, la page se sélectionne mais pas ses cadres isolés ; avec, les deux.
+
 ## Installation (mode développeur)
 
 1. Ouvrez `chrome://extensions`
