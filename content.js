@@ -4,19 +4,41 @@
 //   ▭ Drag   : dessine un rectangle, les éléments interceptés sont ajoutés
 //              (la surbrillance n'apparaît qu'après la sélection)
 // Un commentaire unique est attaché au GROUPE de sélection.
+//
+// Chargé dans la page ET dans chacun de ses cadres (iframes, y compris les
+// cadres isolés « sandbox » d'une application) : on ne peut pas viser depuis
+// la page ce qu'un cadre affiche. Deux rôles :
+//   - la page (cadre du haut) porte le panneau et la sélection ;
+//   - un cadre ne fait que viser : il surligne chez lui et envoie à la page la
+//     description de ce qu'on y choisit (par le service worker).
 
 (() => {
-  if (window.__elemntActive) {
-    teardown();
-    return;
-  }
-  window.__elemntActive = true;
+  if (window.__elemntCharge) return; // déjà chargé dans ce cadre : rien à refaire
+  window.__elemntCharge = true;
+
+  const estPage = window === window.top;
 
   const state = {
+    active: false,
     mode: "pick", // 'pick' | 'drag'
-    selections: [], // { el, selector }
+    // { el, selector } pour un élément de la page ;
+    // { frameId, id, desc } pour un élément choisi dans un cadre
+    selections: [],
     groupComment: ""
   };
+
+  // ---------- messages : page <-> cadres, par le service worker ----------
+
+  function envoyer(msg) {
+    try {
+      chrome.runtime.sendMessage(msg).catch(() => {});
+    } catch {
+      // extension rechargée : ce script n'a plus de lien avec elle
+    }
+  }
+  const versPage = (payload) => envoyer({ type: "ELEMNT_TO_PAGE", payload });
+  const versCadres = (payload) => envoyer({ type: "ELEMNT_TO_FRAMES", payload });
+  const versCadre = (frameId, payload) => envoyer({ type: "ELEMNT_TO_FRAME", frameId, payload });
 
   // ---------- utilitaires ----------
 
@@ -51,13 +73,14 @@
   }
 
   function describe(el) {
-    const classes =
-      typeof el.className === "string" ? el.className.trim() : "";
+    const classes = (typeof el.className === "string" ? el.className : "")
+      .split(/\s+/)
+      .filter((c) => c && !c.startsWith("elemnt-"));
     const text = (el.textContent || "").trim().replace(/\s+/g, " ");
-    return {
+    const d = {
       tag: el.tagName.toLowerCase(),
       id: el.id || undefined,
-      classes: classes ? classes.split(/\s+/) : [],
+      classes,
       cssSelector: cssPath(el),
       textPreview: text.slice(0, 120),
       outerHTML: el.outerHTML.slice(0, 2000),
@@ -71,6 +94,14 @@
         };
       })()
     };
+    // Dans un cadre : lequel (son titre, s'il en a un) ; position comptée depuis lui.
+    if (!estPage) d.frame = { url: location.href, title: document.title };
+    return d;
+  }
+
+  // La description d'une sélection, d'où qu'elle vienne.
+  function descOf(s) {
+    return s.el ? describe(s.el) : s.desc;
   }
 
   function mark(el) {
@@ -81,21 +112,51 @@
     el.classList.remove("elemnt-hover-outline");
   }
 
+  // ---------- la sélection : dans la page, ou depuis un cadre ----------
+
+  // Dans un cadre : les éléments choisis, par numéro (la page ne voit que ce numéro).
+  const marques = new Map(); // id -> el
+  const numeros = new WeakMap(); // el -> id
+  let prochainNumero = 1;
+
   function isSelected(el) {
+    if (!estPage) return numeros.has(el) && marques.has(numeros.get(el));
     return state.selections.some((s) => s.el === el);
   }
 
   function addSelection(el) {
     if (!el || isSelected(el)) return;
-    state.selections.push({ el, selector: cssPath(el) });
     mark(el);
+    if (!estPage) {
+      const id = numeros.get(el) || prochainNumero++;
+      numeros.set(el, id);
+      marques.set(id, el);
+      versPage({ type: "ELEMNT_FRAME_PICK", id, desc: describe(el) });
+      return;
+    }
+    state.selections.push({ el, selector: cssPath(el) });
     renderList();
+  }
+
+  // Un clic sur un élément déjà choisi le retire.
+  function toggleSelection(el) {
+    if (!isSelected(el)) {
+      addSelection(el);
+    } else if (!estPage) {
+      const id = numeros.get(el);
+      marques.delete(id);
+      unmark(el);
+      versPage({ type: "ELEMNT_FRAME_UNPICK", id });
+    } else {
+      removeSelection(state.selections.findIndex((s) => s.el === el));
+    }
   }
 
   function removeSelection(index) {
     const s = state.selections[index];
     if (!s) return;
-    unmark(s.el);
+    if (s.el) unmark(s.el);
+    else versCadre(s.frameId, { type: "ELEMNT_UNMARK", id: s.id });
     state.selections.splice(index, 1);
     renderList();
   }
@@ -107,22 +168,23 @@
   function pickOver(e) {
     const el = e.target;
     if (panelContains(el)) return;
-    if (hovered && hovered !== el) unmark(hovered);
+    if (hovered && hovered !== el) hovered.classList.remove("elemnt-hover-outline");
     hovered = el;
+    // Un cadre se vise de l'intérieur (son propre script) : pas de contour sur lui en entier.
+    if (estPage && el.tagName === "IFRAME") return;
     if (!isSelected(el)) el.classList.add("elemnt-hover-outline");
   }
 
   function pickOut() {
-    if (hovered) unmark(hovered);
+    if (hovered) hovered.classList.remove("elemnt-hover-outline");
   }
 
   function pickClick(e) {
     if (panelContains(e.target)) return;
     e.preventDefault();
     e.stopPropagation();
-    const idx = state.selections.findIndex((s) => s.el === e.target);
-    if (idx >= 0) removeSelection(idx); // re-clic = retire
-    else addSelection(e.target);
+    e.target.classList.remove("elemnt-hover-outline");
+    toggleSelection(e.target);
   }
 
   // ---------- mode DRAG ----------
@@ -194,7 +256,7 @@
     return r.width * r.height;
   }
 
-  // ---------- panneau ----------
+  // ---------- panneau (dans la page seulement) ----------
 
   let panel = null;
 
@@ -279,11 +341,16 @@
     renderList();
   }
 
+  // Le mode vaut pour la page et ses cadres.
   function setMode(mode) {
     state.mode = mode;
-    panel.querySelectorAll("#elemnt-modes button").forEach((b) => {
-      b.classList.toggle("active", b.dataset.mode === mode);
-    });
+    if (panel) {
+      panel.querySelectorAll("#elemnt-modes button").forEach((b) => {
+        b.classList.toggle("active", b.dataset.mode === mode);
+      });
+    }
+    bindMode();
+    if (estPage) versCadres({ type: "ELEMNT_STATE", active: true, mode });
   }
 
   function renderList() {
@@ -294,7 +361,7 @@
     list.innerHTML = "";
 
     state.selections.forEach((s, i) => {
-      const d = describe(s.el);
+      const d = descOf(s);
       const item = document.createElement("div");
       item.className = "elemnt-item";
       item.innerHTML = `
@@ -302,17 +369,29 @@
         d.classes.length ? "." + d.classes.join(".") : ""
       }</div>
         <button class="elemnt-remove">Retirer</button>`;
+      if (d.frame) {
+        // Élément d'un cadre : dans lequel (le titre du cadre, en texte).
+        const ou = document.createElement("span");
+        ou.className = "elemnt-frame";
+        ou.textContent = ` · ${d.frame.title || "dans un cadre"}`;
+        item.querySelector(".elemnt-tagline").appendChild(ou);
+      }
       item.querySelector(".elemnt-remove").addEventListener("click", () =>
         removeSelection(i)
       );
       // clic sur la ligne = fait défiler jusqu'à l'élément
       item.querySelector(".elemnt-tagline").addEventListener("click", () => {
-        s.el.scrollIntoView({ behavior: "smooth", block: "center" });
-        s.el.classList.add("elemnt-flash");
-        setTimeout(() => s.el.classList.remove("elemnt-flash"), 1200);
+        if (s.el) flashEl(s.el);
+        else versCadre(s.frameId, { type: "ELEMNT_FLASH", id: s.id });
       });
       list.appendChild(item);
     });
+  }
+
+  function flashEl(el) {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("elemnt-flash");
+    setTimeout(() => el.classList.remove("elemnt-flash"), 1200);
   }
 
   // ---------- export ----------
@@ -320,13 +399,13 @@
   function buildReport() {
     return {
       tool: "Elemnt",
-      version: "0.2.0",
+      version: "0.3.0",
       generatedAt: new Date().toISOString(),
       page: { url: location.href, title: document.title },
       instruction: state.groupComment,
       elements: state.selections.map((s, i) => ({
         index: i + 1,
-        ...describe(s.el)
+        ...descOf(s)
       }))
     };
   }
@@ -361,14 +440,32 @@
 
   // ---------- cycle de vie ----------
 
+  // Un cadre ajouté à la page pendant la sélection (un outil qu'on ouvre)
+  // reçoit le script à son tour.
+  let surveillance = null;
+
   function activate() {
-    buildPanel();
-    bindMode();
+    state.active = true;
     document.addEventListener("keydown", onKey);
+    if (!estPage) {
+      bindMode();
+      return;
+    }
+    buildPanel(); // pose aussi le mode, et le dit aux cadres
+    surveillance = new MutationObserver((changes) => {
+      const cadre = changes.some((c) =>
+        Array.from(c.addedNodes).some(
+          (n) => n.nodeType === 1 && (n.tagName === "IFRAME" || n.querySelector?.("iframe"))
+        )
+      );
+      if (cadre) setTimeout(() => envoyer({ type: "ELEMNT_REINJECT" }), 300);
+    });
+    surveillance.observe(document.documentElement, { childList: true, subtree: true });
   }
 
   function bindMode() {
     unbindMode();
+    if (!state.active) return;
     if (state.mode === "pick") {
       document.addEventListener("mouseover", pickOver, true);
       document.addEventListener("mouseout", pickOut, true);
@@ -390,24 +487,75 @@
   }
 
   function onKey(e) {
-    if (e.key === "Escape") teardown();
+    if (e.key !== "Escape") return;
+    if (estPage) teardown();
+    else versPage({ type: "ELEMNT_FRAME_ESCAPE" });
   }
 
   function teardown() {
-    window.__elemntActive = false;
+    state.active = false;
     unbindMode();
     document.removeEventListener("keydown", onKey);
-    state.selections.forEach((s) => unmark(s.el));
     if (hovered) unmark(hovered);
+    hovered = null;
     if (band) band.remove();
+    band = null;
+    if (!estPage) {
+      marques.forEach((el) => unmark(el));
+      marques.clear();
+      return;
+    }
+    state.selections.forEach((s) => s.el && unmark(s.el));
+    state.selections = [];
+    if (surveillance) surveillance.disconnect();
+    surveillance = null;
     if (panel) panel.remove();
     panel = null;
-    band = null;
+    versCadres({ type: "ELEMNT_STATE", active: false });
   }
 
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg?.type === "ELEMNT_TOGGLE" && !window.__elemntActive) activate();
+    if (!msg || typeof msg.type !== "string") return;
+    if (estPage) {
+      if (msg.type === "ELEMNT_TOGGLE") {
+        if (state.active) teardown();
+        else activate();
+      } else if (!state.active) {
+        // sélection coupée : un cadre en retard n'y ajoute rien
+      } else if (msg.type === "ELEMNT_FRAME_HELLO") {
+        versCadre(msg.frameId, { type: "ELEMNT_STATE", active: true, mode: state.mode });
+      } else if (msg.type === "ELEMNT_FRAME_PICK") {
+        const deja = state.selections.some((s) => s.frameId === msg.frameId && s.id === msg.id);
+        if (!deja) state.selections.push({ frameId: msg.frameId, id: msg.id, desc: msg.desc });
+        renderList();
+      } else if (msg.type === "ELEMNT_FRAME_UNPICK") {
+        state.selections = state.selections.filter((s) => !(s.frameId === msg.frameId && s.id === msg.id));
+        renderList();
+      } else if (msg.type === "ELEMNT_FRAME_ESCAPE") {
+        teardown();
+      }
+      return;
+    }
+    // Dans un cadre : ce que dit la page.
+    if (msg.type === "ELEMNT_STATE") {
+      if (!msg.active) {
+        if (state.active) teardown();
+      } else {
+        state.mode = msg.mode || state.mode;
+        if (state.active) bindMode();
+        else activate();
+      }
+    } else if (msg.type === "ELEMNT_UNMARK") {
+      const el = marques.get(msg.id);
+      if (el) unmark(el);
+      marques.delete(msg.id);
+    } else if (msg.type === "ELEMNT_FLASH") {
+      const el = marques.get(msg.id);
+      if (el) flashEl(el);
+    }
   });
 
-  activate();
+  // Se présenter : le service worker pose les styles dans ce cadre, et la
+  // page, si une sélection est en cours, dit au cadre de viser aussi.
+  envoyer({ type: "ELEMNT_HELLO" });
 })();

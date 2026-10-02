@@ -11,6 +11,12 @@ Extension navigateur (Chrome / Edge / Brave — Manifest V3) qui permet de **sé
 
 Le rapport JSON contient pour chaque élément : tag, id, classes, sélecteur CSS, aperçu du texte, HTML externe (tronqué), position/taille et votre instruction.
 
+### Dans les cadres (v0.3)
+
+Les éléments affichés dans un **cadre** (iframe) se sélectionnent comme ceux de la page, y compris dans les cadres isolés `sandbox` qu'utilisent certaines applications pour exécuter du code à part. Le script est injecté dans la page et dans chacun de ses cadres ; un cadre ouvert après l'activation le reçoit aussi. Le panneau reste dans la page.
+
+Un élément venu d'un cadre porte dans le rapport un champ `frame` : `{ url, title }` (le titre du document du cadre), et sa position `rect` est comptée depuis le cadre. Dans la liste du panneau, le titre du cadre suit l'élément.
+
 ## Installation (mode développeur)
 
 1. Ouvrez `chrome://extensions`
@@ -31,7 +37,7 @@ Le rapport JSON contient pour chaque élément : tag, id, classes, sélecteur CS
 ```
 Elemnt/
 ├── manifest.json   # Manifest V3
-├── background.js   # service worker : injection au clic sur l'icône
+├── background.js   # service worker : injection au clic (page et cadres), relais page ↔ cadres
 ├── content.js      # logique : hover, sélection, panneau, export JSON
 ├── overlay.css     # styles de l'overlay et du panneau
 └── icon.png        # icône

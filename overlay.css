@@ -151,6 +151,10 @@
   cursor: pointer;
 }
 .elemnt-item .elemnt-tagline:hover { text-decoration: underline; }
+.elemnt-item .elemnt-frame {
+  font-family: system-ui, sans-serif;
+  color: #9aa3b5;
+}
 
 .elemnt-remove {
   background: #2a1416;

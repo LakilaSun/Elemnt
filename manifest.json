@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Elemnt",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Sélectionnez des éléments d'une page web, commentez-les, et générez un rapport JSON prêt à envoyer à un agent IA.",
   "permissions": ["activeTab", "scripting", "clipboardWrite"],
   "action": {
